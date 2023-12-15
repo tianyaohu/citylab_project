@@ -19,7 +19,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 if(BUILD_TESTING)
@@ -34,7 +34,7 @@ if(BUILD_TESTING)
 endif()
 
 add_executable(patrol_node src/patrol.cpp)
-ament_target_dependencies(patrol_node rclcpp std_msgs geometry_msgs nav_msgs)
+ament_target_dependencies(patrol_node rclcpp std_msgs geometry_msgs sensor_msgs)
 
 install(TARGETS
    patrol_node
