@@ -47,18 +47,21 @@ private:
   void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
     // Lambda function to filter out inf values and find the index of the
     // maximum value
-    auto findMaxIndex = [](const std::vector<float> &arr) {
+    auto findIndex = [](const std::vector<float> &arr,
+                        const int startIndex = 179, const int endIndex = 539,
+                        bool findMax = true) {
       // to igonore ranges beyong laser capacity
       int max_laser_capacity = 30;
-
-      // truncating the laser range from 180 to 539
-      const int startIndex = 179;
-      const int endIndex = 539;
 
       // Create a copy of the array to avoid modifying the original
       std::vector<float> filteredArray;
       copy(arr.begin() + startIndex, arr.begin() + endIndex,
            back_inserter(filteredArray));
+
+      //   for (size_t i = 0; i < filteredArray.size(); i++) {
+      //     cout << "i is " << i << " and reading is " << filteredArray[i] <<
+      //     endl;
+      //   }
 
       //   cout << "right?" << filteredArray[0] << endl;
 
@@ -74,32 +77,39 @@ private:
                                          }),
                           filteredArray.end());
 
-      // Find the iterator to the maximum element
-      auto maxIterator =
-          std::max_element(filteredArray.begin(), filteredArray.end());
+      // Find the iterator to the minimum or maximum element based on the
+      // predicate
+      auto iterator =
+          findMax
+              ? std::max_element(filteredArray.begin(), filteredArray.end())
+              : std::min_element(filteredArray.begin(), filteredArray.end());
 
       // Calculate the index of the maximum element
-      int index = std::distance(filteredArray.begin(), maxIterator);
+      int index = std::distance(filteredArray.begin(), iterator)
 
-      //   cout << " range min"
-
-      //        << arr[distance(arr.begin(), min_element(arr.begin(),
-      //        arr.end()))]
-      //        << endl;
-
-      return index;
+          return index;
     };
 
     // find the max index in the front of the robot
-    int temp = findMaxIndex(msg->ranges);
+    int temp = findIndex(msg->ranges);
     float half_range = 180.0;
 
     direction_ = (temp - half_range) / half_range * (M_PI / 2);
 
-    // the robot breaks if it is very close to the obstacle,
-    //   - e.g robot can
-    //  set velocity
-    if (msg->ranges[359] < 0.4) {
+    // set special protocol when something is in the front
+    // The Philosophy here is to have a wide front sensing range white keeping
+    // the sensitive low (aka: trigering distnace lowe)
+    int index_center = 359, vision_width = 50;
+    float avoid_dist = 0.22;
+    int min_index_within_vision =
+        findIndex(msg->ranges, index_center - vision_width,
+                  index_center + vision_width, false);
+    float min_within_vision =
+        msg->ranges[index_center - vision_width + min_index_within_vision];
+
+    cout << "min within vision: " << min_within_vision << endl;
+
+    if (min_within_vision < avoid_dist) { // this finds the min within range
       linear_x = 0;
       if (last_direction > 0) {
         angular_z = -0.7;
@@ -109,19 +119,13 @@ private:
       // force sleep
       RCLCPP_INFO(this->get_logger(), "trying to sleep! ");
 
-      rclcpp::sleep_for(3000ms);
+      rclcpp::sleep_for(2500ms);
     } else {
-      angular_z = direction_ / 2.2;
+      angular_z = direction_ / 2;
       // angular_z = 0.1;
       linear_x = 0.1;
+      last_direction = direction_;
     }
-
-    last_direction = direction_;
-
-    // for (int i = 0; i < 360; i++) {
-    //   cout << "i is " << i << "; corresponding radian is "
-    //        << (i - half_range) / half_range * (M_PI / 2) << endl;
-    // }
 
     // testing laser scan direction
     //  // back
@@ -136,7 +140,6 @@ private:
     //  cout << "719 lazer reading " << msg->ranges[719] << endl;
 
     RCLCPP_INFO(this->get_logger(), "index is : '%d'", temp);
-    cout << "this is angular z" << angular_z << endl;
   }
 
   // attributes
