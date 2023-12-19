@@ -31,13 +31,15 @@ public:
         "/scan", 1, std::bind(&RobotPatrol::scan_callback, this, _1), option1);
 
     // init pub with Callback group
-    vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+    vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
     timer_ = this->create_wall_timer(
         100ms, std::bind(&RobotPatrol::timer_callback, this), callback_group_2);
   }
 
 private:
   void timer_callback() {
+    // cout << "linear x is " << linear_x << endl;
+    // cout << "angular z is " << angular_z << endl;
     auto message = geometry_msgs::msg::Twist();
     message.linear.x = linear_x;
     message.angular.z = angular_z;
@@ -85,9 +87,9 @@ private:
               : std::min_element(filteredArray.begin(), filteredArray.end());
 
       // Calculate the index of the maximum element
-      int index = std::distance(filteredArray.begin(), iterator)
+      int index = std::distance(filteredArray.begin(), iterator);
 
-          return index;
+      return index;
     };
 
     // find the max index in the front of the robot
@@ -99,8 +101,8 @@ private:
     // set special protocol when something is in the front
     // The Philosophy here is to have a wide front sensing range white keeping
     // the sensitive low (aka: trigering distnace lowe)
-    int index_center = 359, vision_width = 50;
-    float avoid_dist = 0.22;
+    int index_center = 359, vision_width = 90;
+    float avoid_dist = 0.17;
     int min_index_within_vision =
         findIndex(msg->ranges, index_center - vision_width,
                   index_center + vision_width, false);
@@ -112,14 +114,17 @@ private:
     if (min_within_vision < avoid_dist) { // this finds the min within range
       linear_x = 0;
       if (last_direction > 0) {
+
         angular_z = -0.7;
+        RCLCPP_INFO(this->get_logger(), "Avoiding obstacles: turning RIGHT!");
+
       } else {
         angular_z = 0.7;
+        RCLCPP_INFO(this->get_logger(), "Avoiding obstacles: turning LEFT!");
       }
       // force sleep
-      RCLCPP_INFO(this->get_logger(), "trying to sleep! ");
 
-      rclcpp::sleep_for(2500ms);
+      rclcpp::sleep_for(100ms);
     } else {
       angular_z = direction_ / 2;
       // angular_z = 0.1;
