@@ -1,3 +1,4 @@
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -9,7 +10,9 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include <robot_patrol/action/go_to_pose.hpp>
+#include <robot_patrol/srv/get_direction.hpp>
 
 using namespace std;
 
@@ -28,77 +31,72 @@ public:
         rclcpp::CallbackGroupType::MutuallyExclusive);
     callback_group_2 = this->create_callback_group(
         rclcpp::CallbackGroupType::MutuallyExclusive);
+    callback_group_3 = this->create_callback_group(
+        rclcpp::CallbackGroupType::MutuallyExclusive);
 
     // init subscription option
     rclcpp::SubscriptionOptions option1;
     option1.callback_group = callback_group_1;
+    // init subscription option
+    rclcpp::SubscriptionOptions option2;
+    option1.callback_group = callback_group_2;
 
     // init odom sub
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "odom", 1, std::bind(&GoToPoseActionServer::odom_callback, this, _1),
         option1);
 
-    // this->action_server_ = rclcpp_action::create_server<GoToPose>(
-    //     this, "go_to_pose",
-    //     std::bind(&GoToPoseActionServer::handle_goal, this, _1, _2),
-    //     std::bind(&GoToPoseActionServer::handle_cancel, this, _1),
-    //     std::bind(&GoToPoseActionServer::handle_accepted, this, _1),
-    //     rcl_action_server_get_default_options(), callback_group_2);
+    // init laser subscription
+    laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+        "scan", 1, std::bind(&GoToPoseActionServer::scan_callback, this, _1),
+        option2);
 
+    // init command vel pub
     vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+
+    action_server_ = rclcpp_action::create_server<GoToPose>(
+        this, "go_to_pose",
+        std::bind(&GoToPoseActionServer::handle_goal, this, _1, _2),
+        std::bind(&GoToPoseActionServer::handle_cancel, this, _1),
+        std::bind(&GoToPoseActionServer::handle_accepted, this, _1),
+        rcl_action_server_get_default_options(), callback_group_3);
   }
 
 private:
   // attributes
   rclcpp::CallbackGroup::SharedPtr callback_group_1;
   rclcpp::CallbackGroup::SharedPtr callback_group_2;
+  rclcpp::CallbackGroup::SharedPtr callback_group_3;
 
   rclcpp_action::Server<GoToPose>::SharedPtr action_server_;
+
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr vel_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr laser_sub_;
 
   // current pos2d
   geometry_msgs::msg::Pose2D cur_pos;
+  sensor_msgs::msg::LaserScan cur_scan;
+
+  void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
+    cur_scan = *msg;
+  }
 
   void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-    cout << "within odom callback" << endl;
-
-    cout << "x is " << msg->pose.pose.position.x << endl;
-    cout << "y is " << msg->pose.pose.position.y << endl;
-    cout << "z is " << msg->pose.pose.position.z << endl;
 
     // set x,y of the current position
     cur_pos.x = msg->pose.pose.position.x;
     cur_pos.y = msg->pose.pose.position.y;
-
-    float yaw, pitch, roll;
 
     const float q_x = msg->pose.pose.orientation.x;
     const float q_y = msg->pose.pose.orientation.y;
     const float q_z = msg->pose.pose.orientation.z;
     const float q_w = msg->pose.pose.orientation.w;
 
-    // Roll (x-axis rotation)
-    float sinRoll = 2.0f * (q_w * q_x + q_y * q_z);
-    float cosRoll = 1.0f - 2.0f * (q_x * q_x + q_y * q_y);
-    roll = std::atan2(sinRoll, cosRoll);
-
-    // Pitch (y-axis rotation)
-    float sinPitch = 2.0f * (q_w * q_y - q_z * q_x);
-    // Avoid gimbal lock at the poles
-    if (std::abs(sinPitch) >= 1)
-      pitch = std::copysign(M_PI / 2, sinPitch);
-    else
-      pitch = std::asin(sinPitch);
-
     // Yaw (z-axis rotation)
     float sinYaw = 2.0f * (q_w * q_z + q_x * q_y);
     float cosYaw = 1.0f - 2.0f * (q_y * q_y + q_z * q_z);
-    yaw = std::atan2(sinYaw, cosYaw);
-
-    cout << "row is " << roll << endl;
-    cout << "pitch is " << pitch << endl;
-    cout << "yaw is " << yaw << endl;
+    float yaw = std::atan2(sinYaw, cosYaw);
 
     // set theta of current positon
     cur_pos.theta = yaw;
@@ -123,8 +121,8 @@ private:
 
   void handle_accepted(const std::shared_ptr<GoalHandleMove> goal_handle) {
     using namespace std::placeholders;
-    // this needs to return quickly to avoid blocking the executor, so spin up a
-    // new thread
+    // this needs to return quickly to avoid blocking the executor, so spin up
+    // a new thread
     std::thread{std::bind(&GoToPoseActionServer::execute, this, _1),
                 goal_handle}
         .detach();
@@ -137,42 +135,79 @@ private:
 
     auto result = std::make_shared<GoToPose::Result>();
     auto move = geometry_msgs::msg::Twist();
-    rclcpp::Rate loop_rate(1);
 
+    auto desired_pos = goal->goal_pos;
+
+    const float MAX_LINEAR_SPEED = 0.2;
+    const float MAX_ANGULAR_SPEED = 0.5;
     while (rclcpp::ok()) {
       // Check if there is a cancel request
       if (goal_handle->is_canceling()) {
-
         // stop the robot
-
+        move.linear.x = 0;
+        move.angular.z = 0;
+        vel_pub_->publish(move);
+        // set goal state
         result->status = false;
         goal_handle->canceled(result);
         RCLCPP_INFO(this->get_logger(), "Goal canceled");
         return;
       }
 
-      // send a client call to /direction_service and store the result in a
-      // future
+      // calculate turning speed
+      float diff_x = desired_pos.x - cur_pos.x,
+            diff_y = desired_pos.y - cur_pos.y;
+      float dirc = atan2(diff_y, diff_x);
 
-      // GoToPose robot forward and send feedback
-      //   move.linear.x = 0.3;
+      // Set linear speed
+      float abs_dist = sqrt(diff_x * diff_x + diff_y * diff_y);
+      move.linear.x = min(MAX_LINEAR_SPEED, abs_dist / 5);
+
+      // calculate true delta
+      float turn_delta;
+      if (abs_dist < 0.05) {
+        turn_delta = cur_pos.theta - desired_pos.theta;
+      } else {
+        turn_delta = cur_pos.theta - dirc;
+      }
+
+      if (abs(turn_delta) > M_PI) {
+        turn_delta =
+            turn_delta > 0 ? 2 * M_PI - turn_delta : 2 * M_PI + turn_delta;
+      }
+
+      // set angular speed
+      move.angular.z = min(MAX_ANGULAR_SPEED, turn_delta / -3);
+
       vel_pub_->publish(move);
+
       feedback->current_pos = cur_pos;
       goal_handle->publish_feedback(feedback);
-      RCLCPP_INFO(this->get_logger(), "Publish feedback");
+      RCLCPP_INFO(this->get_logger(),
+                  "Publish feedback, reaching goal in %f distancel; %f turn "
+                  "delta; linear x "
+                  "speed: %f, angular z speed %f.",
+                  abs_dist, abs(turn_delta), move.linear.x, move.angular.z);
 
-      loop_rate.sleep();
+      // check if goal is compelete (if we are close enough)
+      if (abs_dist + abs(cur_pos.theta - desired_pos.theta) < 0.1) {
+        break;
+      } else {
+        this_thread::sleep_for(100ms);
+      }
     }
 
     // Check if goal is done
     if (rclcpp::ok()) {
       result->status = true;
       move.linear.x = 0.0;
+      move.angular.z = 0.0;
       vel_pub_->publish(move);
       goal_handle->succeed(result);
       RCLCPP_INFO(this->get_logger(), "Goal succeeded");
     }
   }
+
 }; // class GoToPoseActionServer
 
 int main(int argc, char **argv) {
